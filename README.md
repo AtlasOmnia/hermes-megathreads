@@ -1,5 +1,7 @@
 # Hermes Agent Megathreads
 
+> Part of the AtlasOmnia Hermes Agent toolset → [hermesagenttools.com/hermes-agent/](https://hermesagenttools.com/hermes-agent/)
+
 Community-maintained Markdown versions of r/hermesagent megathreads.
 
 The Reddit posts are good for discussion and visibility. This repo is for keeping the information editable, reviewable, and easy to update over time.
