@@ -4,7 +4,7 @@
 >
 > Original Reddit thread: https://www.reddit.com/r/hermesagent/comments/1ucmvi8/multiagent_profiles_megathread_hermes_agent_june/
 >
-> **Snapshot:** Original post preserved and normalized; comment corrections reviewed through July 16, 2026.
+> **Snapshot:** Original post preserved and normalized; comment corrections reviewed through July 16, 2026. Bot Mode group chat and `hermes peer` sections added November 6, 2026 (checked against Hermes Agent v0.23.0 docs and source) and updated November 12, 2026 for v0.23.1, which made every new group chat gateway-run, including ones with Bots from other machines.
 >
 > Time-sensitive prices, quotas, versions, model availability, benchmarks, and third-party project claims remain dated snapshots unless an official source is cited.
 
@@ -23,6 +23,8 @@
 |Multiple bot tokens|**One bot per profile**|Cleaner isolation if you have the tokens|
 |Subagent delegation|**delegate\_task** for parallel research, code review, multi-file|Not for durable work — use Kanban for that|
 |Agent teams managing themselves|**Kanban + profiles + cron**|Dispatcher spawns workers, they claim tasks, comment to coordinate|
+|Agents discussing together (you watching)|**Bot Mode group chat** (Desktop)|Built-in shared room for 2–6 Bots with @mentions and hard round caps; from v0.23.1 the gateway runs it, even with Bots on other machines; *added Nov 2026, see Pattern 8*|
+|Agents on different machines|**`hermes peer`**|Gateway-to-gateway DMs with no desktop in the loop; *see Pattern 9*|
 
 # Part 1: Profiles — The Foundation
 
@@ -202,6 +204,57 @@ Create a dedicated Telegram group or Discord channel where agents post to each o
 * Telegram: Bots need admin access for full functionality; non-admin bots can only respond to slash commands or ping mentions
 
 Community caution from multiple users: This pattern can lead to agent loops and token waste. "I woke up one morning to two of my agents complaining all night about how they hadn't heard from me in several hours" — u/thetomsays (+26). Use mention-required mode and circuit breakers.
+
+# Pattern 8: Bot Mode Group Chats (Built-in, Hermes Desktop)
+
+*Added November 6, 2026 against Hermes Agent v0.23.0; updated November 12, 2026 against v0.23.1 and the current Bot Mode docs.* This replaces most of the "Telegram group with several bot tokens" setups in Pattern 7 for people who use Hermes Desktop.
+
+Bot Mode is built into Hermes Desktop and on by default. It shows your profiles as a roster of **Bots**. A Bot *is* a profile, so there's no new primitive. **New Group Chat** seats 2–6 Bots in one shared room:
+
+* Your message starts up to **three serial rounds** of member turns. @-mentioned Bots answer; if nobody is mentioned, everyone may answer. Each Bot replies briefly or passes, and the room settles when a full round stays silent.
+* Bots pull each other in with `@name` and escalate judgment calls to you with `@user`, which puts a **needs you** badge on the room.
+* **Hard caps (10 messages per send, 3 rounds)** keep rooms from spinning, which addresses the "agents talked all night" failure from Pattern 7. On a gateway-owned room the cap pauses the discussion with **Continue** / **Stop**.
+* Room settings can route unaddressed messages to **Everyone**, a **lead**, or an automatic pick. The automatic pick is one cheap model call, configurable via `auxiliary.group_router`.
+* Each member keeps its own persistent room session, titled `Group: <room> · <thread>`. Cron routines can post into rooms.
+
+**Where the room runs matters (v0.23.1 and later):**
+
+|Room type|Who drives the room|Keeps running with Desktop closed?|
+|:-|:-|:-|
+|**Every new group chat**, whether its Bots are on this computer or on others|The gateway of the connection you create it on (its "home"): durable log + driver|**Yes**: catches up from the log when you reopen|
+|**Classic group chat** (an older version saved it; Desktop no longer creates them)|Hermes Desktop|**No**: pauses while Desktop is closed. Keeps its history, is not converted to a gateway room|
+
+Bots on other computers join through their own gateways, and their turns run on their own machines. Details from the docs:
+
+* The home and member gateways must both stay running. The member gateway needs the `api_server` platform with durable run storage, an advertised `gateway.room_link_url` reachable from the home, and approvals not set to `off`. If anything is missing, the New Group Chat dialog says what to change on which computer and refuses to create the room rather than fall back to a Desktop-driven one.
+* Text only: a message with files fails that member's turn visibly.
+* Any profile the member gateway serves can join, not only its default.
+* Access is a one-day grant that Desktop renews while the room is open. After more than a day idle, open the room with the member gateway reachable, or use **Retry**.
+* Links are direct gateway-to-gateway connections. If the room spans a NAT boundary, put the room's authority on the host every participant can reach (typically the public VPS) or bridge with Tailscale/VPN.
+* A selection made only of Bots on one *other* connection isn't created from here: add a Bot from the active connection, or switch to that connection first.
+
+**Version history:** the gateway-to-gateway room transport ("RoomLink": `gateway.room_link_url`, `groups.peer.invite` / `groups.peer.register`) was already in the v0.23.0 source, but there Desktop still made a Desktop-driven classic room whenever a selection mixed connections. v0.23.1 (November 10, 2026) wired Desktop to the gateway transport for every new room. The docs also describe a JSON-RPC route for setting up a cross-gateway room by hand, and an operator procedure for transferring a room's authority to another gateway.
+
+**Historical test note (November 6, 2026, v0.23.0):** in one mixed-gateway test, which at that version was a Desktop-driven classic room, a member's turn already in flight finished after Desktop disconnected, but its reply never appeared in the room. This describes that version's classic rooms, not current gateway-run rooms.
+
+**Test on v0.23.1 (November 12, 2026):** two v0.23.1 installs on one host (separate OS users and gateways, linked over loopback). The member gateway had `gateway.room_link_url` set and reported `room_link.enabled: true` in `groups.capabilities`. We created a two-member room with the documented JSON-RPC calls (`groups.create`, `groups.peer.invite`, `groups.peer.register`), not through the Desktop dialog, and no Desktop was connected at any point. The member's reply arrived in the room. We then sent an `@all` message and disconnected the client immediately: both gateways kept taking turns without it, six turns in all, until the 3-round cap ended the discussion. One finding along the way: a v0.23.0 install is not a valid member, because it doesn't offer `groups.peer.invite`. Not tested: the Desktop New Group Chat dialog, machines on separate networks, and attachments (text only).
+
+Docs: [Bot Mode → Groups and group chats](https://hermes-agent.nousresearch.com/docs/user-guide/bot-mode#groups-and-group-chats)
+
+# Pattern 9: `hermes peer` (Built-in, Machine-to-Machine)
+
+For Bots on **different machines** that need to talk with no desktop running. Register the other gateway as a peer: its API server URL plus its `API_SERVER_KEY`. The peer must run the `api_server` platform.
+
+    hermes peer add spark --url http://spark.lan:8377 --key <API_SERVER_KEY>
+    hermes peer dm spark/researcher < message.txt      # short query: runs one turn, prints the reply
+    hermes peer run spark --idempotency-key ticket-123 < long-task.txt   # long turn: returns a run_id
+    hermes peer status spark <run_id>
+
+Once a peer is registered, Bots learn about it automatically and can call `message_agent(target="spark/researcher", ...)` themselves. **Headless caveat:** `message_agent` only appears in a canonical session titled `Bot Chat`, on an install where at least one profile carries Desktop's Bot Mode marker. A gateway-only install that has never run Desktop needs both set up by hand (see "What actually makes a chat a Bot Chat" in the docs). The `hermes peer` CLI itself works regardless. Bot-to-bot exchanges are bounded by `gateway.bot_loop_guard.max_hops` (default 4). Desktop also relays `message_agent` calls between connected machines, but only while it's running. `hermes peer` is the always-on route.
+
+Reachability is up to your network (LAN, Tailscale, VPN): links are direct gateway-to-gateway, so a gateway behind home NAT can reach a public VPS but not the reverse.
+
+Docs: [Bot Mode → Bot-to-bot messaging](https://hermes-agent.nousresearch.com/docs/user-guide/bot-mode#bot-to-bot-messaging)
 
 # Part 3: The Community's Real Setups
 
@@ -394,13 +447,17 @@ Changes to SOUL.md take effect on NEW sessions only. If you change SOUL.md mid-c
 
 Setting terminal.cwd does NOT set the profile boundary. The profile boundary is HERMES\_HOME. Working directory is separate.
 
+# Pitfall 7: Expecting a Classic (Desktop-Driven) Group Chat to Run Unattended
+
+On v0.23.0 and earlier, a group chat with Bots on different gateways was a Desktop-driven classic room and paused while Desktop was closed. Classic rooms saved by an older version still behave that way and are not converted; create a new group chat to get a gateway-run one (it doesn't copy the old messages). Gateway-run rooms have their own limits: the home and every member gateway must stay running, and cross-machine access expires after a day idle unless renewed (see Pattern 8). For long unattended work across machines, `hermes peer` or Kanban remain the simplest routes.
+
 # Part 7: FAQ
 
 **Q: How do I separate work and personal agents?**
 A: Create separate profiles: `hermes profile create work --clone`. Give each its own Telegram bot token. Or use Telegram topics with a single bot routed to different profiles.
 
 **Q: Can agents talk to each other directly?**
-A: Not natively like a group chat. The closest patterns are: (1) Kanban comments as inter-agent protocol, (2) Telegram group with multiple bot tokens, (3) A2A Context Bus plugin. Direct agent-to-agent conversation is not a built-in Hermes feature.
+A: *Updated November 2026:* yes, this is now built in. (1) **Bot Mode group chats** in Hermes Desktop seat 2–6 Bots in one room, run by a gateway and able to include Bots on other machines from v0.23.1 (Pattern 8). (2) Bots message each other directly with `message_agent`. (3) **`hermes peer`** links gateways on different machines (Pattern 9). Kanban comments are still the right channel for durable work handoffs. *(Original June 2026 answer: "Not natively like a group chat"; that was accurate then.)*
 
 **Q: Should I use profiles or delegate\_task?**
 A: Profiles = persistent agents with memory and identity. Delegate\_task = disposable subagents for one-off reasoning. They're complementary — profiles are the team, delegate\_task is consulting an expert for a quick opinion.
@@ -437,6 +494,8 @@ A: Enable hard stops: `tool_loop_guardrails.hard_stop_enabled: true` with `hard_
 |**Kanban Comments**|Inter-agent protocol|Agent-to-agent handoff|Agents must be instructed to read|
 |**Kanban Workspaces**|Task isolation|Per-task directories|Scratch dirs deleted on completion|
 |**Multiple Bot Tokens**|Gateway isolation|Strict agent separation|More tokens to manage|
+|**Bot Mode Group Chat**|Built-in room (Desktop, gateway-run)|2–6 Bots deliberating, human in the loop, incl. Bots on other machines (v0.23.1+)|Home and member gateways must stay up; member needs `api_server` + `room_link_url`; text only; older classic rooms still pause when Desktop closes|
+|**`hermes peer`**|Built-in gateway link|Cross-machine Bot DMs, always on|Needs `api_server` + key; network reachability|
 
 # Part 9: The Bottom Line
 
